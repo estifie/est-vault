@@ -15,7 +15,7 @@ path = "src/lib.rs"
 
 [dependencies]
 # Pinned to a commit until est-core cuts v0.1.0, when this becomes a tag.
-est-core = { git = "https://github.com/estifie/est-core", rev = "1dcebdc69c847bd1f9a31a5ca42825c2b0482782" }
+est-core = { git = "https://github.com/estifie/est-core", rev = "e7fe9e25a102f6677d6ef2c68ea6e8733b9af7e5" }
 aes-gcm = "0.10"
 base64 = "0.22"
 zeroize = "1"

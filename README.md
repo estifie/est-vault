@@ -10,10 +10,24 @@ format is stable — byte-compatible with Angel's vault and the Python
 Platform: macOS in v1 (the key lives in the Keychain, reached through
 the `security` CLI).
 
-The `est-vault` CLI (env injection, remote push, templates) lands
-next; it tracks `angel vault` parity.
+## CLI
 
-## Use
+```sh
+cargo install --path .   # or: cargo build --release, then ./../.target/release/est-vault
+est-vault where          # store, templates, keychain paths
+est-vault init           # make a store where `where` points
+echo -n value | est-vault add TELEGRAM:BOT:DEMO
+est-vault get TELEGRAM:BOT:DEMO
+est-vault run --use TELEGRAM:BOT:DEMO=BOT_TOKEN -- ./bot.sh
+est-vault check
+```
+
+The full reference is [docs/cli.md](docs/cli.md): every command in
+text and `--json` shapes. Store layout and crypto:
+[format](docs/format.md). How the store, schema, and key are found:
+[resolution](docs/resolution.md).
+
+## Library
 
 ```rust
 use est_vault::store::Store;
@@ -23,9 +37,6 @@ for addr in store.addresses("TELEGRAM:") {
     println!("{addr}");
 }
 ```
-
-Store layout and crypto: [format](docs/format.md). How the store,
-schema, and key are found: [resolution](docs/resolution.md).
 
 ## Modules
 

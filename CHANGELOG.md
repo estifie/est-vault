@@ -14,3 +14,6 @@ versions: SemVer.
 - `Zeroizing` key material, wiped on drop.
 - Committed conformance vectors proving the Python-generated fixtures
   open untouched.
+- `est-vault` binary: `where`, `init`, `list`, `add`, `get`, `remove`,
+  `templates`, `template add/delete`, `run`, `push`, and vault-scoped
+  `check`, with `--json` envelopes throughout.
