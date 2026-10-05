@@ -14,7 +14,8 @@ name = "est_vault"
 path = "src/lib.rs"
 
 [dependencies]
-est-core = { git = "https://github.com/estifie/est-core", branch = "main" }
+# Pinned to a commit until est-core cuts v0.1.0, when this becomes a tag.
+est-core = { git = "https://github.com/estifie/est-core", rev = "1dcebdc69c847bd1f9a31a5ca42825c2b0482782" }
 aes-gcm = "0.10"
 base64 = "0.22"
 zeroize = "1"
