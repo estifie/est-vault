@@ -1,0 +1,120 @@
+{
+  "key_b64": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8=",
+  "store": "store",
+  "cases": [
+    {
+      "address": "REVENUECAT:KEY:COMICSCANNER",
+      "kind": "text",
+      "value": "sk_test_comicscanner",
+      "why": "a plain value"
+    },
+    {
+      "address": "REVENUECAT:KEY:UNICODE",
+      "kind": "text",
+      "value": "sk_ünï_✓",
+      "why": "non-ASCII text"
+    },
+    {
+      "address": "REVENUECAT:KEY:MULTILINE",
+      "kind": "text",
+      "value": "line1\nline2",
+      "why": "a newline inside a value"
+    },
+    {
+      "address": "APPLE:KEYID:ME@ICLOUD.COM",
+      "kind": "text",
+      "value": "69GG3NAX8V",
+      "why": "an e-mail scope"
+    },
+    {
+      "address": "TELEGRAM:CHATID:ESTIFIE",
+      "kind": "text",
+      "value": "123456789",
+      "plain": true,
+      "why": "a plain entry needs no key"
+    },
+    {
+      "address": "TELEGRAM:CHATID:UNICODE",
+      "kind": "text",
+      "value": "chat ✓",
+      "plain": true,
+      "why": "plain, non-ASCII"
+    },
+    {
+      "address": "TELEGRAM:BOT:ESTIFIE:MYBOT",
+      "kind": "text",
+      "value": "bot-token",
+      "why": "a four-segment address, one folder deeper"
+    },
+    {
+      "address": "TELEGRAM:TOKEN:BOTH",
+      "kind": "text",
+      "value": "the-encrypted-one",
+      "why": "an encrypted secret beats a stale plain twin"
+    },
+    {
+      "address": "APPLE:P8:ME@ICLOUD.COM",
+      "kind": "file",
+      "filename": "AuthKey_69GG3NAX8V.p8",
+      "data_b64": "LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1JR1RGQUtFCi0tLS0tRU5EIFBSSVZBVEUgS0VZLS0tLS0K",
+      "why": "a file keeps its own name"
+    },
+    {
+      "address": "APPLE:P8:BINARY",
+      "kind": "file",
+      "filename": "blob.bin",
+      "data_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0BBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWltcXV5fYGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn+AgYKDhIWGh4iJiouMjY6PkJGSk5SVlpeYmZqbnJ2en6ChoqOkpaanqKmqq6ytrq+wsbKztLW2t7i5uru8vb6/wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX2Nna29zd3t/g4eLj5OXm5+jp6uvs7e7v8PHy8/T19vf4+fr7/P3+/w==",
+      "why": "arbitrary bytes"
+    }
+  ],
+  "absent": [
+    "REVENUECAT:KEY:NOPE",
+    "OTHER:KIND:SCOPE",
+    "revenuecat:key:nope"
+  ],
+  "lowercase_finds": {
+    "input": "revenuecat:key:comicscanner",
+    "value": "sk_test_comicscanner"
+  },
+  "errors": [
+    {
+      "address": "REVENUECAT:KEY:TAMPERED",
+      "why": "a flipped byte"
+    },
+    {
+      "address": "REVENUECAT:KEY:MOVED",
+      "why": "a file copied from another address"
+    },
+    {
+      "address": "REVENUECAT:KEY:BADMAGIC",
+      "why": "another magic"
+    },
+    {
+      "address": "REVENUECAT:KEY:SHORT",
+      "why": "shorter than a header"
+    },
+    {
+      "address": "APPLE:P8:BADLAYOUT",
+      "why": "opens, but the file layout is cut off"
+    }
+  ],
+  "bad_addresses": [
+    "REVENUECAT:KEY:../../X",
+    "REVENUECAT:KEY:a/b",
+    "ONE",
+    "",
+    "REVENUECAT:KEY:"
+  ],
+  "addresses_under_telegram": [
+    "TELEGRAM:BOT:ESTIFIE:MYBOT",
+    "TELEGRAM:CHATID:ESTIFIE",
+    "TELEGRAM:CHATID:UNICODE",
+    "TELEGRAM:TOKEN:BOTH"
+  ],
+  "addresses_under_apple": [
+    "APPLE:KEYID:ME@ICLOUD.COM",
+    "APPLE:P8:BADLAYOUT",
+    "APPLE:P8:BINARY",
+    "APPLE:P8:ME@ICLOUD.COM"
+  ]
+}

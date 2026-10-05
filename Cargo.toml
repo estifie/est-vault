@@ -1,0 +1,32 @@
+[package]
+name = "est-vault"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+description = "Central environment, configuration, and secrets management for the EST product ecosystem."
+repository = "https://github.com/estifie/est-vault"
+license = "MIT OR Apache-2.0"
+keywords = ["est", "secrets", "vault", "env"]
+categories = ["command-line-utilities", "config", "cryptography"]
+
+[lib]
+name = "est_vault"
+path = "src/lib.rs"
+
+[dependencies]
+est-core = { git = "https://github.com/estifie/est-core", branch = "main" }
+aes-gcm = "0.10"
+base64 = "0.22"
+zeroize = "1"
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[profile.dev]
+# Line tables only: backtraces keep working, full debuginfo (the bulk of
+# dev artifacts) stays out of the shared target dir.
+debug = "line-tables-only"
