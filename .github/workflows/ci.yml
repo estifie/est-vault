@@ -22,10 +22,13 @@ jobs:
 
   supply-chain:
     runs-on: macos-latest
+    # Latest stable, not the pinned toolchain: the audit tools themselves
+    # need a modern rustc to build. The env override wins over
+    # rust-toolchain.toml for every step in this job.
+    env:
+      RUSTUP_TOOLCHAIN: stable
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-      # Latest stable, not the pinned toolchain: the audit tools themselves
-      # need a modern rustc to build.
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
           toolchain: stable
