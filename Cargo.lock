@@ -91,7 +91,7 @@ dependencies = [
 [[package]]
 name = "est-core"
 version = "0.1.0"
-source = "git+https://github.com/estifie/est-core?rev=e7fe9e25a102f6677d6ef2c68ea6e8733b9af7e5#e7fe9e25a102f6677d6ef2c68ea6e8733b9af7e5"
+source = "git+https://github.com/estifie/est-core?tag=v0.1.0#479cdd44705dee10ef01efffc39872f4d0341f93"
 
 [[package]]
 name = "est-vault"
