@@ -421,3 +421,181 @@ fn help_usage_and_json_errors() {
     assert_eq!(value["v"], 1);
     assert!(value["error"].as_str().unwrap().contains("no secret"));
 }
+
+/// Fake `scp`/`ssh` on PATH: the scp stub keeps a copy of whatever file
+/// it was asked to send (so the ssh stub can hash the *actual* staged
+/// bytes with AUTO), both record their argv, and exits/outputs are driven
+/// by `EST_STUB_SCP_EXIT` / `EST_STUB_SSH_HEX`. No network exists here.
+fn stub_ssh(vault: &Vault) -> PathBuf {
+    let bin = vault.dir.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(
+        bin.join("scp"),
+        "#!/bin/sh\necho \"$@\" >> \"$EST_STUB_DIR/scp-args\"\nfor a in \"$@\"; do\n  if [ -f \"$a\" ]; then cp \"$a\" \"$EST_STUB_DIR/staged.env\"; fi\ndone\nexit ${EST_STUB_SCP_EXIT:-0}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        bin.join("ssh"),
+        "#!/bin/sh\necho \"$@\" >> \"$EST_STUB_DIR/ssh-args\"\nif [ \"${EST_STUB_SSH_HEX:-AUTO}\" = \"AUTO\" ]; then\n  sum=$(shasum -a 256 \"$EST_STUB_DIR/staged.env\" | cut -d' ' -f1)\n  echo \"$sum  /remote/.env\"\nelse\n  echo \"$EST_STUB_SSH_HEX  /remote/.env\"\nfi\nexit ${EST_STUB_SSH_EXIT:-0}\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for tool in ["scp", "ssh"] {
+            let mut perms = std::fs::metadata(bin.join(tool)).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(bin.join(tool), perms).unwrap();
+        }
+    }
+    bin
+}
+
+fn push_with_stubs(vault: &Vault, bin: &std::path::Path, args: &[&str]) -> Output {
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    vault
+        .cmd(args)
+        .env("PATH", path)
+        .env("EST_STUB_DIR", vault.dir.clone())
+        .output()
+        .unwrap()
+}
+
+fn push_log(vault: &Vault) -> String {
+    std::fs::read_to_string(vault.dir.join("store").join(".push-log")).unwrap_or_default()
+}
+
+#[test]
+fn push_sends_strict_and_audits() {
+    let vault = Vault::new("push-send");
+    vault.skeleton();
+    vault.run(&["add", "T:K:A", "--plain", "--value", "live-value"]);
+    let bin = stub_ssh(&vault);
+    let out = push_with_stubs(
+        &vault,
+        &bin,
+        &["push", "--use", "T:K:A=REMOTE_KEY", "me@vps:/srv/app/.env"],
+    );
+    assert!(out.status.success(), "{}", vault.stderr(&out));
+    assert!(
+        vault.stdout(&out).contains("sent;"),
+        "{}",
+        vault.stdout(&out)
+    );
+    let scp_args = std::fs::read_to_string(vault.dir.join("scp-args")).unwrap_or_default();
+    assert!(scp_args.contains("StrictHostKeyChecking=yes"), "{scp_args}");
+    assert!(scp_args.contains("BatchMode=yes"), "{scp_args}");
+    let staged = std::fs::read_to_string(vault.dir.join("staged.env")).unwrap_or_default();
+    assert!(staged.contains("REMOTE_KEY="), "{staged}");
+    let log = push_log(&vault);
+    assert!(
+        log.contains("\tok\tme@vps:/srv/app/.env\t1\tfalse\tREMOTE_KEY"),
+        "{log}"
+    );
+    assert!(!log.contains("live-value"), "{log}");
+}
+
+#[test]
+fn push_verify_confirms_matching_bytes() {
+    let vault = Vault::new("push-verify");
+    vault.skeleton();
+    vault.run(&["add", "T:K:A", "--plain", "--value", "v1"]);
+    let bin = stub_ssh(&vault);
+    let out = push_with_stubs(
+        &vault,
+        &bin,
+        &[
+            "push",
+            "--verify",
+            "--use",
+            "T:K:A=K",
+            "--json",
+            "me@vps:/srv/app/.env",
+        ],
+    );
+    assert!(out.status.success(), "{}", vault.stderr(&out));
+    let value = parse_json(&out);
+    assert_eq!(value["ok"], true);
+    assert_eq!(value["verified"], true);
+    let ssh_args = std::fs::read_to_string(vault.dir.join("ssh-args")).unwrap_or_default();
+    assert!(ssh_args.contains("StrictHostKeyChecking=yes"), "{ssh_args}");
+    assert!(ssh_args.contains("BatchMode=yes"), "{ssh_args}");
+    assert!(ssh_args.contains("sha256sum"), "{ssh_args}");
+    let log = push_log(&vault);
+    assert!(
+        log.contains("\tok\tme@vps:/srv/app/.env\t1\ttrue\tK"),
+        "{log}"
+    );
+}
+
+#[test]
+fn push_verify_refuses_mismatched_bytes() {
+    let vault = Vault::new("push-mismatch");
+    vault.skeleton();
+    vault.run(&["add", "T:K:A", "--plain", "--value", "v1"]);
+    let bin = stub_ssh(&vault);
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let out = vault
+        .cmd(&[
+            "push",
+            "--verify",
+            "--use",
+            "T:K:A=K",
+            "me@vps:/srv/app/.env",
+        ])
+        .env("PATH", path)
+        .env("EST_STUB_DIR", vault.dir.clone())
+        .env(
+            "EST_STUB_SSH_HEX",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        vault.stderr(&out).contains("differ"),
+        "{}",
+        vault.stderr(&out)
+    );
+    let log = push_log(&vault);
+    assert!(log.contains("\tmismatch\t"), "{log}");
+}
+
+#[test]
+fn push_scp_failure_is_audited_and_explains_host_keys() {
+    let vault = Vault::new("push-scpfail");
+    vault.skeleton();
+    vault.run(&["add", "T:K:A", "--plain", "--value", "v1"]);
+    let bin = stub_ssh(&vault);
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let out = vault
+        .cmd(&["push", "--use", "T:K:A=K", "me@vps:/srv/app/.env"])
+        .env("PATH", path)
+        .env("EST_STUB_DIR", vault.dir.clone())
+        .env("EST_STUB_SCP_EXIT", "1")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        vault.stderr(&out).contains("host keys"),
+        "{}",
+        vault.stderr(&out)
+    );
+    let log = push_log(&vault);
+    assert!(
+        log.contains("\tfailed\tme@vps:/srv/app/.env\t0\tfalse\tK"),
+        "{log}"
+    );
+}

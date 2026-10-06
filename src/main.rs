@@ -27,7 +27,7 @@ est-vault: the secrets store.
                                        run CMD with the secrets as env vars
   est-vault run [--file F] [--use ADDR=ENV]... -- CMD ...
                                        same, plus a .sec.toml manifest
-  est-vault push [--file F] [--use ADDR=ENV]... [--base F] [--dry-run] HOST:PATH
+  est-vault push [--file F] [--use ADDR=ENV]... [--base F] [--dry-run] [--verify] HOST:PATH
                                        send a built .env to a server over scp
   est-vault check                      store, key, schema, and files
 
@@ -833,15 +833,99 @@ fn dotenv_line(name: &str, value: &str) -> Result<String, String> {
     Ok(format!("{name}='{value}'"))
 }
 
+/// Single-quote a remote path for sh: `o'clock` → `'o'\''clock'`.
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// The SHA-256 of bytes, lowercase hex.
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(bytes);
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Ask the server what it received: `sha256sum`, falling back to macOS
+/// `shasum`. Returns the remote digest, or why it could not be read.
+fn verify_remote(host: &str, remote: &str) -> Result<String, String> {
+    let quoted = sh_quote(remote);
+    let probe = format!("sha256sum {quoted} 2>/dev/null || shasum -a 256 {quoted}");
+    let out = std::process::Command::new("ssh")
+        .args([
+            "-o",
+            "StrictHostKeyChecking=yes",
+            "-o",
+            "BatchMode=yes",
+            host,
+            &probe,
+        ])
+        .output()
+        .map_err(|e| format!("could not run ssh: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("ssh exited {}", out.status.code().unwrap_or(1)));
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .next()
+        .map(str::to_string)
+        .ok_or_else(|| "no digest in the ssh output".to_string())
+}
+
+/// Append one TSV line to `<store>/.push-log` (0600): when, result,
+/// target, count, verified, env names. Never values. Best-effort: a log
+/// failure warns but never fails the push it records.
+fn audit_push(
+    store: &Store,
+    result: &str,
+    target: &str,
+    sent: usize,
+    verified: bool,
+    names: &[String],
+) {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let line = format!(
+        "{secs}\t{result}\t{target}\t{sent}\t{verified}\t{}\n",
+        names.join(",")
+    );
+    let wrote = {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(store.dir().join(".push-log"))
+            .and_then(|mut f| {
+                use std::io::Write;
+                f.write_all(line.as_bytes())
+            })
+            .is_ok()
+    };
+    if !wrote {
+        eprintln!("note: the push was attempted but the audit log refused the line");
+    }
+}
+
 /// Build a `.env` from the store and scp it to a server: the deploy path.
 /// `--base` prepends a local file (store values come last and win);
-/// `--dry-run` names what would go, nothing made or sent. Files refuse —
-/// a .env holds values; a file secret travels to the server separately.
+/// `--dry-run` names what would go, nothing made or sent; `--verify`
+/// re-reads the remote file over ssh and compares digests before
+/// reporting success. Files refuse — a .env holds values; a file secret
+/// travels to the server separately. Every send (and every failed send)
+/// appends to `<store>/.push-log`, names only, never values.
 fn cmd_push(args: &[String], json: bool) -> i32 {
     let mut uses: Vec<(String, String)> = Vec::new();
     let mut manifest: Option<String> = None;
     let mut base: Option<String> = None;
     let mut dry_run = false;
+    let mut verify = false;
     let mut target = "";
     let mut i = 0;
     while i < args.len() {
@@ -878,6 +962,7 @@ fn cmd_push(args: &[String], json: bool) -> i32 {
                 base = Some(path.to_string());
             }
             "--dry-run" => dry_run = true,
+            "--verify" => verify = true,
             flag if flag.starts_with("--") => {
                 eprintln!("est-vault push: unexpected {flag:?}");
                 return 2;
@@ -949,7 +1034,7 @@ fn cmd_push(args: &[String], json: bool) -> i32 {
                 })
             })
             .collect();
-        if !shadowed.is_empty() {
+        if !shadowed.is_empty() && !json {
             let base_name = Path::new(base_path)
                 .file_name()
                 .map(|n| n.to_string_lossy())
@@ -987,7 +1072,9 @@ fn cmd_push(args: &[String], json: bool) -> i32 {
         }
         return 0;
     }
-    println!("sending {} values to {target}", names.len());
+    if !json {
+        println!("sending {} values to {target}", names.len());
+    }
     let dir = std::env::temp_dir().join(format!("est-vault-push-{}", std::process::id()));
     {
         use std::os::unix::fs::DirBuilderExt;
@@ -1011,33 +1098,90 @@ fn cmd_push(args: &[String], json: bool) -> i32 {
         return fail(json, "cannot stage the .env");
     }
     let status = std::process::Command::new("scp")
-        .args(["-q", &file.display().to_string(), target])
+        .args([
+            "-o",
+            "StrictHostKeyChecking=yes",
+            "-o",
+            "BatchMode=yes",
+            "-q",
+            &file.display().to_string(),
+            target,
+        ])
         .status();
     let _ = std::fs::remove_dir_all(&dir);
     match status {
-        Ok(s) if s.success() => {
-            if json {
-                println!(
-                    "{}",
-                    cli::ok(&format!(
-                        "\"target\":\"{}\",\"sent\":{}",
-                        cli::esc(target),
-                        names.len()
-                    ))
-                );
-            } else {
-                println!("sent; the local copy is deleted");
-            }
-            0
+        Ok(s) if !s.success() => {
+            audit_push(&store, "failed", target, 0, false, &names);
+            fail(
+                json,
+                &format!(
+                    "scp failed (exit {}); nothing was left behind — check `ssh {}` connects (unknown host keys refuse: connect once manually to accept)",
+                    s.code().unwrap_or(1),
+                    host.trim(),
+                ),
+            )
         }
-        Ok(s) => fail(
-            json,
-            &format!(
-                "scp failed (exit {}); nothing was left behind",
-                s.code().unwrap_or(1)
-            ),
-        ),
-        Err(e) => fail(json, &format!("could not run scp: {e}")),
+        Err(e) => {
+            audit_push(&store, "failed", target, 0, false, &names);
+            fail(json, &format!("could not run scp: {e}"))
+        }
+        Ok(_) => {
+            if verify {
+                let digest = sha256_hex(body.as_bytes());
+                match verify_remote(host.trim(), remote.trim()) {
+                    Ok(got) if got.eq_ignore_ascii_case(&digest) => {
+                        audit_push(&store, "ok", target, names.len(), true, &names);
+                        if json {
+                            println!(
+                                "{}",
+                                cli::ok(&format!(
+                                    "\"target\":\"{}\",\"sent\":{},\"verified\":true",
+                                    cli::esc(target),
+                                    names.len()
+                                ))
+                            );
+                        } else {
+                            println!("sent and verified; the local copy is deleted");
+                        }
+                        0
+                    }
+                    Ok(_) => {
+                        audit_push(&store, "mismatch", target, names.len(), true, &names);
+                        fail(
+                            json,
+                            &format!(
+                                "sent, but the remote bytes differ from what was staged — investigate on {} before deploying",
+                                host.trim()
+                            ),
+                        )
+                    }
+                    Err(e) => {
+                        audit_push(&store, "unverified", target, names.len(), false, &names);
+                        fail(
+                            json,
+                            &format!(
+                                "sent, but verification failed ({e}); the remote file is unconfirmed"
+                            ),
+                        )
+                    }
+                }
+            } else {
+                audit_push(&store, "ok", target, names.len(), false, &names);
+                if json {
+                    println!(
+                        "{}",
+                        cli::ok(&format!(
+                            "\"target\":\"{}\",\"sent\":{}",
+                            cli::esc(target),
+                            names.len()
+                        ))
+                    );
+                } else {
+                    println!("sent; the local copy is deleted");
+                }
+                0
+            }
+        }
     }
 }
 
@@ -1197,5 +1341,21 @@ mod tests {
         assert_eq!(sanitize_file("AuthKey.p8"), "AuthKey.p8");
         assert_eq!(sanitize_file("a/b\\c"), "a_b_c");
         assert_eq!(sanitize_file(""), "secret");
+    }
+
+    #[test]
+    fn quoting_survives_spaces_and_single_quotes() {
+        assert_eq!(sh_quote("/srv/app/.env"), "'/srv/app/.env'");
+        assert_eq!(sh_quote("o'clock"), "'o'\\''clock'");
+        assert_eq!(sh_quote("a b"), "'a b'");
+    }
+
+    #[test]
+    fn digest_matches_the_known_vector() {
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(sha256_hex(b"").len(), 64);
     }
 }

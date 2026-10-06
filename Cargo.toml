@@ -17,6 +17,7 @@ path = "src/lib.rs"
 est-core = { git = "https://github.com/estifie/est-core", tag = "v0.1.0" }
 aes-gcm = "0.10"
 base64 = "0.22"
+sha2 = "0.10"
 zeroize = "1"
 
 [dev-dependencies]

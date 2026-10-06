@@ -14,7 +14,7 @@ est-vault templates
 est-vault template add TPL [--plain] [--file] [--hint H] [--about A]
 est-vault template delete PROVIDER KIND
 est-vault run [--file F] [--use ADDR=ENV]... -- CMD ...
-est-vault push [--file F] [--use ADDR=ENV]... [--base F] [--dry-run] HOST:PATH
+est-vault push [--file F] [--use ADDR=ENV]... [--base F] [--dry-run] [--verify] HOST:PATH
 est-vault check
 ```
 
@@ -143,15 +143,24 @@ unstored, anything else missing fails before the child spawns.
 Builds a `.env` from the store and scps it to `HOST:PATH`. `--base`
 prepends a local file (store values come last and win, with a note
 naming shadowed names); `--dry-run` names what would go — env names
-only, never values — and sends nothing. File secrets refuse: a `.env`
+only, never values — and sends nothing. `--verify` re-reads the
+remote file over ssh after the copy and compares SHA-256 digests,
+refusing success unless the bytes match. File secrets refuse: a `.env`
 holds values.
+
+Both hops run strict: unknown or changed host keys refuse, and nothing
+ever prompts for a password — `ssh HOST` once manually to accept a new
+host, then push. Every send (and failed send) appends one line to
+`<store>/.push-log`: when, result, target, count, verified, env names.
+Never values.
 
 ```sh
 est-vault push --dry-run --use A=B me@vps:/srv/app/.env
+est-vault push --verify --file .sec.toml me@vps:/srv/app/.env
 ```
 
 JSON: `{"ok":true,"v":1,"target":"...","sent":N}` plus
-`"dry_run":true` on dry runs.
+`"dry_run":true` on dry runs and `"verified":true` on verified sends.
 
 ## check
 
