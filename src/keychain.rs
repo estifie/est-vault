@@ -1,5 +1,5 @@
 //! The 32-byte key, held base64 in the login Keychain through the same
-//! `security` argv Angel and Python use. Reads fall back through the older
+//! `security` argv the Python `sec` toolkit uses. Reads fall back through the older
 //! services, so a renamed service never orphans the key; writes always go
 //! to the explicit service or the EST one. Keys are [`Zeroizing`]: wiped
 //! on drop.
@@ -14,7 +14,7 @@ use crate::Error;
 pub const SERVICE: &str = "est-vault";
 
 /// Older services, read newest-first after [`SERVICE`].
-pub const FALLBACK_SERVICES: [&str; 2] = ["angel-vault", "estifie-sec"];
+pub const FALLBACK_SERVICES: [&str; 1] = ["estifie-sec"];
 
 fn explicit_service() -> Option<String> {
     for var in ["EST_VAULT_KEYCHAIN", "SEC_KEYCHAIN_SERVICE"] {
@@ -53,19 +53,14 @@ pub fn service() -> String {
     write_service(explicit_service().as_deref())
 }
 
-/// The key, or None when no item opens — or none decodes to 32 bytes.
-/// Never touches the store, only the Keychain.
-pub fn get() -> Result<Option<Zeroizing<[u8; 32]>>, Error> {
-    for service in service_list(explicit_service().as_deref()) {
+/// The key from exactly these services, in order, whatever the environment
+/// says. For a reader that must not be pointed elsewhere by an exported
+/// variable — the waiver key is the one — a caller passes the services it
+/// trusts. None when no item opens, or none decodes to 32 bytes.
+pub fn get_from(services: &[&str]) -> Result<Option<Zeroizing<[u8; 32]>>, Error> {
+    for service in services {
         let out = Command::new("security")
-            .args([
-                "find-generic-password",
-                "-a",
-                "master",
-                "-s",
-                &service,
-                "-w",
-            ])
+            .args(["find-generic-password", "-a", "master", "-s", service, "-w"])
             .output()
             .map_err(|e| Error::Keychain(format!("cannot run security: {e}")))?;
         if !out.status.success() {
@@ -81,6 +76,14 @@ pub fn get() -> Result<Option<Zeroizing<[u8; 32]>>, Error> {
         return Ok(Some(Zeroizing::new(key)));
     }
     Ok(None)
+}
+
+/// The key, or None when no item opens — or none decodes to 32 bytes.
+/// Never touches the store, only the Keychain. See [`get_from`].
+pub fn get() -> Result<Option<Zeroizing<[u8; 32]>>, Error> {
+    let services = service_list(explicit_service().as_deref());
+    let names: Vec<&str> = services.iter().map(String::as_str).collect();
+    get_from(&names)
 }
 
 /// Store the key under [`service`], creating or replacing the item.
@@ -115,18 +118,14 @@ mod tests {
     fn default_chain_reads_newest_first() {
         assert_eq!(
             service_list(None),
-            vec![
-                "est-vault".to_string(),
-                "angel-vault".to_string(),
-                "estifie-sec".to_string()
-            ]
+            vec!["est-vault".to_string(), "estifie-sec".to_string()]
         );
     }
 
     #[test]
     fn explicit_service_wins_outright() {
         assert_eq!(service_list(Some("custom")), vec!["custom".to_string()]);
-        assert_eq!(service_list(Some("  ")).len(), 3);
+        assert_eq!(service_list(Some("  ")).len(), 2);
     }
 
     #[test]

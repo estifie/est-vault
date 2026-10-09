@@ -43,12 +43,12 @@ impl Store {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
         let base = base_dir();
         let dir = resolve_store_dir(
-            first_set(&["EST_VAULT_DIR", "ANGEL_VAULT_DIR", "SEC_DIR"]).as_deref(),
+            first_set(&["EST_VAULT_DIR", "SEC_DIR"]).as_deref(),
             &base,
             &home,
         );
         let schema = resolve_schema_path(
-            first_set(&["EST_VAULT_SCHEMA", "ANGEL_VAULT_SCHEMA", "SEC_SCHEMA"]).as_deref(),
+            first_set(&["EST_VAULT_SCHEMA", "SEC_SCHEMA"]).as_deref(),
             &base,
             &home,
         );
@@ -331,10 +331,10 @@ fn first_set(vars: &[&str]) -> Option<String> {
         .find(|s| !s.is_empty())
 }
 
-/// Where the product lives: the `EST_DIR`/`ANGEL_DIR` override, a binary in
-/// `bin/` one level below it, and anything else running where it stands.
+/// Where the product lives: the `EST_DIR` override, a binary in `bin/` one
+/// level below it, and anything else running where it stands.
 fn base_dir() -> PathBuf {
-    let explicit = first_set(&["EST_DIR", "ANGEL_DIR"]);
+    let explicit = first_set(&["EST_DIR"]);
     let exe = std::env::current_exe()
         .ok()
         .map(|e| std::fs::canonicalize(&e).unwrap_or(e));
@@ -382,15 +382,11 @@ pub fn resolve_schema_path(explicit: Option<&str>, base: &Path, home: &str) -> P
     fresh
 }
 
-/// The installer's pointer: the first line of `vault-home` (EST, then
-/// Angel) or the historical `sec/home`.
+/// The installer's pointer: the first line of the EST `vault-home`, or the
+/// historical `sec/home`.
 fn pointer_store(home: &str) -> Option<PathBuf> {
     let config = PathBuf::from(home).join(".config");
-    for (a, b) in [
-        ("est", "vault-home"),
-        ("angel", "vault-home"),
-        ("sec", "home"),
-    ] {
+    for (a, b) in [("est", "vault-home"), ("sec", "home")] {
         if let Some(target) = est_core::paths::pointer_target(&config.join(a).join(b)) {
             return Some(target);
         }
@@ -594,9 +590,9 @@ mod tests {
         let base = dir.join("base");
         let home = dir.join("home");
         let home_str = home.to_string_lossy().into_owned();
-        std::fs::create_dir_all(home.join(".config").join("angel")).unwrap();
+        std::fs::create_dir_all(home.join(".config").join("est")).unwrap();
         std::fs::write(
-            home.join(".config").join("angel").join("vault-home"),
+            home.join(".config").join("est").join("vault-home"),
             "/pointed\n",
         )
         .unwrap();
@@ -604,7 +600,7 @@ mod tests {
             resolve_store_dir(None, &base, &home_str),
             PathBuf::from("/pointed")
         );
-        std::fs::remove_file(home.join(".config").join("angel").join("vault-home")).unwrap();
+        std::fs::remove_file(home.join(".config").join("est").join("vault-home")).unwrap();
         std::fs::create_dir_all(home.join("Desktop").join("SECRETS")).unwrap();
         assert_eq!(
             resolve_store_dir(None, &base, &home_str),
