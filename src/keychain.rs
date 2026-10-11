@@ -59,14 +59,13 @@ pub fn service() -> String {
 /// trusts. None when no item opens, or none decodes to 32 bytes.
 pub fn get_from(services: &[&str]) -> Result<Option<Zeroizing<[u8; 32]>>, Error> {
     // 1. Environment variable override
-    if let Ok(env_key) = std::env::var("EST_VAULT_KEY") {
-        if let Ok(raw) = crate::base64_decode(env_key.trim()) {
-            if raw.len() == 32 {
-                let mut key = [0u8; 32];
-                key.copy_from_slice(&raw);
-                return Ok(Some(Zeroizing::new(key)));
-            }
-        }
+    if let Ok(env_key) = std::env::var("EST_VAULT_KEY")
+        && let Ok(raw) = crate::base64_decode(env_key.trim())
+        && raw.len() == 32
+    {
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&raw);
+        return Ok(Some(Zeroizing::new(key)));
     }
 
     // 2. macOS Keychain via security CLI
@@ -74,16 +73,14 @@ pub fn get_from(services: &[&str]) -> Result<Option<Zeroizing<[u8; 32]>>, Error>
         let out = Command::new("security")
             .args(["find-generic-password", "-a", "master", "-s", service, "-w"])
             .output();
-        if let Ok(out) = out {
-            if out.status.success() {
-                if let Ok(raw) = crate::base64_decode(&String::from_utf8_lossy(&out.stdout)) {
-                    if raw.len() == 32 {
-                        let mut key = [0u8; 32];
-                        key.copy_from_slice(&raw);
-                        return Ok(Some(Zeroizing::new(key)));
-                    }
-                }
-            }
+        if let Ok(out) = out
+            && out.status.success()
+            && let Ok(raw) = crate::base64_decode(&String::from_utf8_lossy(&out.stdout))
+            && raw.len() == 32
+        {
+            let mut key = [0u8; 32];
+            key.copy_from_slice(&raw);
+            return Ok(Some(Zeroizing::new(key)));
         }
     }
 
@@ -93,16 +90,14 @@ pub fn get_from(services: &[&str]) -> Result<Option<Zeroizing<[u8; 32]>>, Error>
         .join(".estifie")
         .join("vault")
         .join("key");
-    if key_file.is_file() {
-        if let Ok(content) = std::fs::read_to_string(&key_file) {
-            if let Ok(raw) = crate::base64_decode(content.trim()) {
-                if raw.len() == 32 {
-                    let mut key = [0u8; 32];
-                    key.copy_from_slice(&raw);
-                    return Ok(Some(Zeroizing::new(key)));
-                }
-            }
-        }
+    if key_file.is_file()
+        && let Ok(content) = std::fs::read_to_string(&key_file)
+        && let Ok(raw) = crate::base64_decode(content.trim())
+        && raw.len() == 32
+    {
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&raw);
+        return Ok(Some(Zeroizing::new(key)));
     }
 
     Ok(None)
@@ -135,10 +130,9 @@ pub fn put(key: &[u8; 32]) -> Result<(), Error> {
             &b64,
         ])
         .status()
+        && status.success()
     {
-        if status.success() {
-            saved = true;
-        }
+        saved = true;
     }
 
     // Also persist ~/.estifie/vault/key with 0600 permissions
