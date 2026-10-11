@@ -58,23 +58,53 @@ pub fn service() -> String {
 /// variable — the waiver key is the one — a caller passes the services it
 /// trusts. None when no item opens, or none decodes to 32 bytes.
 pub fn get_from(services: &[&str]) -> Result<Option<Zeroizing<[u8; 32]>>, Error> {
+    // 1. Environment variable override
+    if let Ok(env_key) = std::env::var("EST_VAULT_KEY") {
+        if let Ok(raw) = crate::base64_decode(env_key.trim()) {
+            if raw.len() == 32 {
+                let mut key = [0u8; 32];
+                key.copy_from_slice(&raw);
+                return Ok(Some(Zeroizing::new(key)));
+            }
+        }
+    }
+
+    // 2. macOS Keychain via security CLI
     for service in services {
         let out = Command::new("security")
             .args(["find-generic-password", "-a", "master", "-s", service, "-w"])
-            .output()
-            .map_err(|e| Error::Keychain(format!("cannot run security: {e}")))?;
-        if !out.status.success() {
-            continue;
+            .output();
+        if let Ok(out) = out {
+            if out.status.success() {
+                if let Ok(raw) = crate::base64_decode(&String::from_utf8_lossy(&out.stdout)) {
+                    if raw.len() == 32 {
+                        let mut key = [0u8; 32];
+                        key.copy_from_slice(&raw);
+                        return Ok(Some(Zeroizing::new(key)));
+                    }
+                }
+            }
         }
-        let raw = crate::base64_decode(&String::from_utf8_lossy(&out.stdout))
-            .map_err(|_| Error::Keychain("Keychain key is not base64".to_string()))?;
-        if raw.len() != 32 {
-            continue;
-        }
-        let mut key = [0u8; 32];
-        key.copy_from_slice(&raw);
-        return Ok(Some(Zeroizing::new(key)));
     }
+
+    // 3. Headless / Linux fallback file: ~/.estifie/vault/key
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    let key_file = std::path::PathBuf::from(home)
+        .join(".estifie")
+        .join("vault")
+        .join("key");
+    if key_file.is_file() {
+        if let Ok(content) = std::fs::read_to_string(&key_file) {
+            if let Ok(raw) = crate::base64_decode(content.trim()) {
+                if raw.len() == 32 {
+                    let mut key = [0u8; 32];
+                    key.copy_from_slice(&raw);
+                    return Ok(Some(Zeroizing::new(key)));
+                }
+            }
+        }
+    }
+
     Ok(None)
 }
 
@@ -89,7 +119,11 @@ pub fn get() -> Result<Option<Zeroizing<[u8; 32]>>, Error> {
 /// Store the key under [`service`], creating or replacing the item.
 pub fn put(key: &[u8; 32]) -> Result<(), Error> {
     let service = service();
-    let status = Command::new("security")
+    let b64 = crate::base64_encode(key);
+    let mut saved = false;
+
+    // Try Keychain first
+    if let Ok(status) = Command::new("security")
         .args([
             "add-generic-password",
             "-U",
@@ -98,13 +132,52 @@ pub fn put(key: &[u8; 32]) -> Result<(), Error> {
             "-s",
             &service,
             "-w",
-            &crate::base64_encode(key),
+            &b64,
         ])
         .status()
-        .map_err(|e| Error::Keychain(format!("cannot run security: {e}")))?;
-    if !status.success() {
+    {
+        if status.success() {
+            saved = true;
+        }
+    }
+
+    // Also persist ~/.estifie/vault/key with 0600 permissions
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    let key_dir = std::path::PathBuf::from(home)
+        .join(".estifie")
+        .join("vault");
+    let _ = std::fs::create_dir_all(&key_dir);
+    let key_file = key_dir.join("key");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let wrote = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&key_file)
+            .and_then(|mut f| {
+                use std::io::Write;
+                f.write_all(b64.as_bytes())
+            });
+        if wrote.is_ok() {
+            saved = true;
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        if std::fs::write(&key_file, &b64).is_ok() {
+            saved = true;
+        }
+    }
+
+    if !saved {
         return Err(Error::Keychain(
-            "security add-generic-password failed".to_string(),
+            "security add-generic-password failed and could not write ~/.estifie/vault/key"
+                .to_string(),
         ));
     }
     Ok(())
