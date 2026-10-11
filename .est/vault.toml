@@ -1,0 +1,4 @@
+# .est/vault.toml - project secret dependencies from est-vault
+[use]
+# API_KEY = "OPENROUTER:KEY:ESTIFIE"
+# DATABASE_URL = "BACKEND:DATABASEURL:PROD"

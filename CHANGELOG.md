@@ -3,9 +3,14 @@
 All notable changes, newest first. Format: Keep a Changelog;
 versions: SemVer.
 
-## [Unreleased]
+''## [Unreleased]
 
 ### Added
+
+- `stale [--days N]` + `rotate ADDR [--yes]`: secret ages (file
+  mtime) with stale flags, and fresh-nonce re-seals with age reset.
+  Rotation refreshes encryption; the checklist reminds to regenerate
+  at the provider afterwards.
 
 - `push --verify`: re-read the remote file over ssh after the copy
   and compare SHA-256 digests; mismatched bytes fail loudly instead

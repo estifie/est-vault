@@ -1,11 +1,12 @@
 //! est-vault: the secrets store, natively.
 //!
-//! Byte-compatible with Angel's vault and the Python `sec` toolkit: same
+//! Byte-compatible with the legacy vault format and the Python `sec` toolkit: same
 //! layout, same files, same outcomes. Crypto is RustCrypto (`aes-gcm`);
 //! the Keychain is reached through the `security` CLI. No hand-rolled
 //! crypto, ever.
 
 pub mod addr;
+pub mod cli;
 pub mod crypto;
 pub mod keychain;
 pub mod schema;

@@ -1,6 +1,6 @@
 //! The store: one file per secret, encrypted or plain.
 //!
-//! Byte-compatible with Angel's vault and the Python `sec` toolkit — see
+//! Byte-compatible with the legacy vault format and the Python `sec` toolkit — see
 //! `docs/format.md`. Resolution order is documented in
 //! `docs/resolution.md` and pinned by the tests below.
 

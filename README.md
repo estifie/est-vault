@@ -5,8 +5,9 @@ EST product ecosystem: one encrypted file store every EST product
 reads, addressed as `PROVIDER:KIND:SCOPE…`.
 
 Status: pre-release. The crate API is unstable until 1.0; the store
-format is stable — byte-compatible with Angel's vault and the Python
-`sec` toolkit, pinned by the conformance suite in `tests/vectors/`.
+format is stable — byte-compatible with the legacy vault format and
+the Python `sec` toolkit, pinned by the conformance suite in
+`tests/vectors/`.
 Platform: macOS in v1 (the key lives in the Keychain, reached through
 the `security` CLI).
 

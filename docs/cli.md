@@ -10,6 +10,8 @@ est-vault list [PREFIX]
 est-vault add ADDR [--plain|--secret] [--file NAME] [--replace] [--value V]
 est-vault get ADDR [--out PATH]
 est-vault remove ADDR [--yes]
+est-vault stale [--days N]
+est-vault rotate ADDR [--yes]
 est-vault templates
 est-vault template add TPL [--plain] [--file] [--hint H] [--about A]
 est-vault template delete PROVIDER KIND
@@ -38,6 +40,19 @@ est-vault check
   value. `run` prints the child's own output; only its manifest
   errors honor `--json`. Usage errors stay human text on stderr
   with exit 2.
+
+''## Rotation (stale + rotate)
+
+Age is the secret file's mtime: any write (`add --replace`, `rotate`)
+resets it. `stale` lists ages and flags rows older than `--days`
+(default 90); `rotate` re-seals one address under a fresh nonce and
+resets its age. Rotation refreshes the encryption, not the credential:
+afterwards regenerate at the provider, then `add --replace`.
+
+```sh
+est-vault stale --days 90
+est-vault rotate OPENROUTER:KEY:ESTIFIE --yes
+```
 
 ## where
 
@@ -179,10 +194,10 @@ JSON: `{"ok":true,"v":1,"store":{"path":"...","present":true,
 Schema and key failures replace their detail object with an
 `"error"` field.
 
-## Divergences from `angel vault`
+## Divergences from the legacy vault
 
 - Envelopes carry `"v":1` per the EST CLI contract; shapes are
   otherwise identical.
-- Angel's `teach`/`forget` template aliases were not carried over.
-- `check` is vault-scoped (store, key, schema, files); Angel's `check`
-  validates its scheduler config instead.
+- The legacy `teach`/`forget` template aliases were not carried over.
+- `check` is vault-scoped (store, key, schema, files); the legacy
+  `check` validates its scheduler config instead.
