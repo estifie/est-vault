@@ -79,6 +79,9 @@ pub fn dispatch(args: &[String], json: bool) -> i32 {
         "list" => {
             let prefix = args.get(1).map(String::as_str).unwrap_or("");
             let store = Store::standard();
+            if !store.has_store() {
+                return fail(json, "no vault here (run `est-vault init` first)");
+            }
             let addrs = store.addresses(prefix);
             if json {
                 let items: Vec<String> = addrs
@@ -486,7 +489,14 @@ fn cmd_rotate(args: &[String], json: bool) -> i32 {
         Err(e) => return fail(json, &e.to_string()),
     };
     let outcome = match opened {
-        Sealed::Text(bytes) => store.seal(addr, &bytes),
+        // `unseal` strips the 'T' frame: re-frame before sealing or the
+        // next read eats the first byte of the secret.
+        Sealed::Text(bytes) => {
+            let mut framed = Vec::with_capacity(1 + bytes.len());
+            framed.push(b'T');
+            framed.extend_from_slice(&bytes);
+            store.seal(addr, &framed)
+        }
         Sealed::File { name, data } => store.set_file(addr, &name, &data),
     };
     if let Err(e) = outcome {

@@ -33,6 +33,12 @@ Reads try each service in order; writes go to the first.
 1. `EST_VAULT_KEYCHAIN`, then `SEC_KEYCHAIN_SERVICE` (explicit)
 2. `est-vault`, then `estifie-sec`
 
+## Master key
+
+1. `EST_VAULT_KEY` (explicit, 32 base64 bytes)
+2. Keychain services above, newest first
+3. `EST_VAULT_KEY_FILE`, else `~/.estifie/vault/key` (headless fallback)
+
 ## Migration note
 
 The store bytes and the key never move: migration only repoints

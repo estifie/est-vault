@@ -599,3 +599,38 @@ fn push_scp_failure_is_audited_and_explains_host_keys() {
         "{log}"
     );
 }
+
+#[test]
+fn rotate_keeps_secret_bytes_intact() {
+    // 32 zero bytes, base64: `EST_VAULT_KEY` unlocks crypto with no Keychain.
+    const KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    let vault = Vault::new("rotate-roundtrip");
+    vault.skeleton();
+    let add = vault
+        .cmd(&["add", "ACME:KEY:WEB", "--value", "s3cret!", "--secret"])
+        .env("EST_VAULT_KEY", KEY)
+        .output()
+        .unwrap();
+    assert!(
+        add.status.success(),
+        "{}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    let rot = vault
+        .cmd(&["rotate", "ACME:KEY:WEB", "--yes"])
+        .env("EST_VAULT_KEY", KEY)
+        .output()
+        .unwrap();
+    assert!(
+        rot.status.success(),
+        "{}",
+        String::from_utf8_lossy(&rot.stderr)
+    );
+    let got = vault
+        .cmd(&["get", "ACME:KEY:WEB"])
+        .env("EST_VAULT_KEY", KEY)
+        .output()
+        .unwrap();
+    assert!(got.status.success());
+    assert_eq!(String::from_utf8_lossy(&got.stdout).trim(), "s3cret!");
+}

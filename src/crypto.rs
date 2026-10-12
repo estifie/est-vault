@@ -43,11 +43,8 @@ pub fn open(key: &[u8; 32], addr: &str, nonce: &[u8], blob: &[u8]) -> Result<Vec
 }
 
 fn random_nonce() -> Result<[u8; 12], Error> {
-    use std::io::Read;
     let mut nonce = [0u8; 12];
-    std::fs::File::open("/dev/urandom")
-        .and_then(|mut f| f.read_exact(&mut nonce))
-        .map_err(|e| Error::Format(format!("no randomness: {e}")))?;
+    getrandom::fill(&mut nonce).map_err(|e| Error::Format(format!("no randomness: {e}")))?;
     Ok(nonce)
 }
 

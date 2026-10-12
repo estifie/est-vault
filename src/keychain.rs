@@ -1,9 +1,13 @@
-//! The 32-byte key, held base64 in the login Keychain through the same
-//! `security` argv the Python `sec` toolkit uses. Reads fall back through the older
-//! services, so a renamed service never orphans the key; writes always go
-//! to the explicit service or the EST one. Keys are [`Zeroizing`]: wiped
-//! on drop.
+//! The 32-byte key, held base64 in the login Keychain. Reads go through
+//! the same `security` argv the Python `sec` toolkit uses (argv carries
+//! only service/account names, never secret bytes); writes go through
+//! Security.framework so the key never appears in `ps`. Reads fall back
+//! through the older services, so a renamed service never orphans the
+//! key; writes always go to the explicit service or the EST one. Keys
+//! are [`Zeroizing`]: wiped on drop.
 
+#[cfg(target_os = "macos")]
+use security_framework::passwords::set_generic_password;
 use std::process::Command;
 
 use zeroize::Zeroizing;
@@ -25,6 +29,21 @@ fn explicit_service() -> Option<String> {
         }
     }
     None
+}
+
+/// The headless fallback key file: `EST_VAULT_KEY_FILE` wins when set
+/// (hermetic tests), else `~/.estifie/vault/key`.
+fn fallback_key_file() -> std::path::PathBuf {
+    if let Ok(path) = std::env::var("EST_VAULT_KEY_FILE")
+        && !path.trim().is_empty()
+    {
+        return std::path::PathBuf::from(path);
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    std::path::PathBuf::from(home)
+        .join(".estifie")
+        .join("vault")
+        .join("key")
 }
 
 /// Services to read, in order: the explicit one wins outright, otherwise
@@ -58,17 +77,7 @@ pub fn service() -> String {
 /// variable — the waiver key is the one — a caller passes the services it
 /// trusts. None when no item opens, or none decodes to 32 bytes.
 pub fn get_from(services: &[&str]) -> Result<Option<Zeroizing<[u8; 32]>>, Error> {
-    // 1. Environment variable override
-    if let Ok(env_key) = std::env::var("EST_VAULT_KEY")
-        && let Ok(raw) = crate::base64_decode(env_key.trim())
-        && raw.len() == 32
-    {
-        let mut key = [0u8; 32];
-        key.copy_from_slice(&raw);
-        return Ok(Some(Zeroizing::new(key)));
-    }
-
-    // 2. macOS Keychain via security CLI
+    // 1. macOS Keychain via security CLI
     for service in services {
         let out = Command::new("security")
             .args(["find-generic-password", "-a", "master", "-s", service, "-w"])
@@ -84,12 +93,8 @@ pub fn get_from(services: &[&str]) -> Result<Option<Zeroizing<[u8; 32]>>, Error>
         }
     }
 
-    // 3. Headless / Linux fallback file: ~/.estifie/vault/key
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    let key_file = std::path::PathBuf::from(home)
-        .join(".estifie")
-        .join("vault")
-        .join("key");
+    // 2. Headless / Linux fallback file, or its test override.
+    let key_file = fallback_key_file();
     if key_file.is_file()
         && let Ok(content) = std::fs::read_to_string(&key_file)
         && let Ok(raw) = crate::base64_decode(content.trim())
@@ -104,11 +109,28 @@ pub fn get_from(services: &[&str]) -> Result<Option<Zeroizing<[u8; 32]>>, Error>
 }
 
 /// The key, or None when no item opens — or none decodes to 32 bytes.
-/// Never touches the store, only the Keychain. See [`get_from`].
+/// `EST_VAULT_KEY` wins outright; otherwise the Keychain services,
+/// otherwise the headless fallback file (`EST_VAULT_KEY_FILE` wins
+/// when set, else `~/.estifie/vault/key`). Never touches the store.
+/// See [`get_from`] for the env-proof read.
 pub fn get() -> Result<Option<Zeroizing<[u8; 32]>>, Error> {
+    if let Some(key) = env_key() {
+        return Ok(Some(key));
+    }
     let services = service_list(explicit_service().as_deref());
     let names: Vec<&str> = services.iter().map(String::as_str).collect();
     get_from(&names)
+}
+
+/// `EST_VAULT_KEY` decoded, when set to 32 base64 bytes.
+fn env_key() -> Option<Zeroizing<[u8; 32]>> {
+    let raw = crate::base64_decode(std::env::var("EST_VAULT_KEY").ok()?.trim()).ok()?;
+    if raw.len() != 32 {
+        return None;
+    }
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&raw);
+    Some(Zeroizing::new(key))
 }
 
 /// Store the key under [`service`], creating or replacing the item.
@@ -117,44 +139,39 @@ pub fn put(key: &[u8; 32]) -> Result<(), Error> {
     let b64 = crate::base64_encode(key);
     let mut saved = false;
 
-    // Try Keychain first
-    if let Ok(status) = Command::new("security")
-        .args([
-            "add-generic-password",
-            "-U",
-            "-a",
-            "master",
-            "-s",
-            &service,
-            "-w",
-            &b64,
-        ])
-        .status()
-        && status.success()
+    // Keychain first (macOS only): through Security.framework, not the
+    // `security` CLI — argv would expose the key to `ps`. Same
+    // service/account the CLI used, so old items keep working.
+    #[cfg(target_os = "macos")]
     {
-        saved = true;
+        if set_generic_password(&service, "master", b64.as_bytes()).is_ok() {
+            saved = true;
+        }
     }
 
-    // Also persist ~/.estifie/vault/key with 0600 permissions
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    let key_dir = std::path::PathBuf::from(home)
-        .join(".estifie")
-        .join("vault");
-    let _ = std::fs::create_dir_all(&key_dir);
-    let key_file = key_dir.join("key");
+    // Also persist the fallback file (0600). `EST_VAULT_KEY_FILE`
+    // redirects it for hermetic tests; default is ~/.estifie/vault/key.
+    let key_file = fallback_key_file();
+    if let Some(key_dir) = key_file.parent() {
+        let _ = std::fs::create_dir_all(key_dir);
+    }
 
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        // `mode` only sets permissions on create: tighten unconditionally
+        // so a pre-existing lax file cannot survive a put.
         let wrote = std::fs::OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
             .mode(0o600)
             .open(&key_file)
-            .and_then(|mut f| {
+            .and_then(|f| {
                 use std::io::Write;
-                f.write_all(b64.as_bytes())
+                let mut f = f;
+                f.write_all(b64.as_bytes())?;
+                f.set_permissions(std::fs::Permissions::from_mode(0o600))
             });
         if wrote.is_ok() {
             saved = true;
@@ -170,8 +187,7 @@ pub fn put(key: &[u8; 32]) -> Result<(), Error> {
 
     if !saved {
         return Err(Error::Keychain(
-            "security add-generic-password failed and could not write ~/.estifie/vault/key"
-                .to_string(),
+            "could not save to the Keychain or ~/.estifie/vault/key".to_string(),
         ));
     }
     Ok(())

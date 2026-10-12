@@ -11,6 +11,7 @@ pub mod crypto;
 pub mod keychain;
 pub mod schema;
 pub mod store;
+pub mod use_manifest;
 
 /// Every way a store operation ends. Display messages never contain a
 /// decrypted byte.

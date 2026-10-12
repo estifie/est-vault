@@ -370,9 +370,17 @@ pub fn define(
         lines.push(format!("hint = {hint:?}"));
     }
     let text = std::fs::read_to_string(path).unwrap_or_default();
-    let had_provider =
-        text.contains(&format!("[{provider}]")) || text.contains(&format!("[{provider}."));
+    // Parsed, not substring-matched: a comment mentioning "[ACME.X]"
+    // must not count as a provider section.
+    let known_provider = schema.provider(provider);
+    let had_provider = known_provider.is_some();
     let mut out = text;
+    if had_provider
+        && known_provider.and_then(|p| p.about.as_ref()).is_none()
+        && let Some(about) = about
+    {
+        insert_about(&mut out, provider, about);
+    }
     if !out.is_empty() && !out.ends_with('\n') {
         out.push('\n');
     }
@@ -393,9 +401,14 @@ pub fn define(
 }
 
 /// Forgets one template: removes its table, keeps everything else byte for
-/// byte. The caller refuses first while addresses still use it.
+/// byte. The caller refuses first while addresses still use it. When the
+/// provider keeps no kinds, its (now empty) section goes too.
 pub fn undefine(path: &Path, provider: &str, kind: &str) -> Result<(), Error> {
     let schema = Schema::load(path)?;
+    let kinds_left = schema
+        .provider(provider)
+        .map(|p| p.kinds.iter().filter(|k| k.name != kind).count())
+        .unwrap_or(0);
     let known = schema
         .provider(provider)
         .and_then(|p| p.kinds.iter().find(|k| k.name == kind))
@@ -405,11 +418,12 @@ pub fn undefine(path: &Path, provider: &str, kind: &str) -> Result<(), Error> {
     }
     let text = std::fs::read_to_string(path).unwrap_or_default();
     let header = format!("[{provider}.{kind}]");
+    let provider_header = format!("[{provider}]");
     let mut out = Vec::new();
     let mut skipping = false;
     for line in text.lines() {
         let clean = strip_comment(line).trim();
-        if clean == header {
+        if clean == header || (kinds_left == 0 && clean == provider_header) {
             skipping = true;
             continue;
         }
@@ -426,6 +440,25 @@ pub fn undefine(path: &Path, provider: &str, kind: &str) -> Result<(), Error> {
     }
     est_core::store::write_atomic(path, joined.as_bytes(), 0o644)?;
     Ok(())
+}
+
+/// Adds `about = "..."` right under the `[PROVIDER]` header, keeping
+/// every other byte. No-op when the header is missing (cannot happen
+/// for a parsed provider, but writers stay total).
+fn insert_about(text: &mut String, provider: &str, about: &str) {
+    let header = format!("[{provider}]");
+    let mut rebuilt = String::with_capacity(text.len() + about.len() + 16);
+    let mut done = false;
+    for line in text.split_inclusive('\n') {
+        rebuilt.push_str(line);
+        if !done && strip_comment(line).trim() == header {
+            rebuilt.push_str(&format!("about = {about:?}\n"));
+            done = true;
+        }
+    }
+    if done {
+        *text = rebuilt;
+    }
 }
 
 #[cfg(test)]
@@ -547,5 +580,47 @@ mod tests {
         );
         assert_eq!(check(&schema, "ACME:OTHER:WEB").unwrap(), None);
         assert!(undefine(&path, "ACME", "KEY").is_err());
+    }
+
+    #[test]
+    fn define_adds_about_to_existing_provider() {
+        let dir = scratch("schema-define-about");
+        let path = dir.join("templates.toml");
+        define(&path, "ACME:KEY:<APP>", false, false, None, None).unwrap();
+        define(
+            &path,
+            "ACME:OTHER:<APP>",
+            false,
+            false,
+            None,
+            Some("Acme stuff"),
+        )
+        .unwrap();
+        let schema = Schema::load(&path).unwrap();
+        assert_eq!(
+            schema.provider("ACME").unwrap().about.as_deref(),
+            Some("Acme stuff")
+        );
+    }
+
+    #[test]
+    fn define_ignores_bracketed_comments() {
+        let dir = scratch("schema-define-comment");
+        let path = dir.join("templates.toml");
+        std::fs::write(&path, "# see [ACME.KEY] for the shape\n").unwrap();
+        let (is_new, _) = define(&path, "ACME:KEY:<APP>", false, false, None, None).unwrap();
+        assert!(is_new);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[ACME]\n"), "{text}");
+    }
+
+    #[test]
+    fn undefine_last_kind_removes_provider_section() {
+        let dir = scratch("schema-undefine-last");
+        let path = dir.join("templates.toml");
+        define(&path, "ACME:KEY:<APP>", false, false, None, Some("Acme")).unwrap();
+        undefine(&path, "ACME", "KEY").unwrap();
+        let schema = Schema::load(&path).unwrap();
+        assert!(schema.provider("ACME").is_none());
     }
 }

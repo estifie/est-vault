@@ -153,9 +153,11 @@ impl Store {
             .collect()
     }
 
-    /// Seal `plaintext` under an explicit key: the hermetic write path.
-    /// Tests and tools that hold their own key.
-    pub fn seal_with(&self, addr: &str, plaintext: &[u8], key: &[u8; 32]) -> Result<()> {
+    /// Seal already-framed `plaintext` under an explicit key: the
+    /// hermetic write path. Crate-only on purpose: framing is a trap
+    /// for outsiders (`unseal` strips the first byte), so tools go
+    /// through [`Store::store_text`] / [`Store::set_file_with`].
+    pub(crate) fn seal_with(&self, addr: &str, plaintext: &[u8], key: &[u8; 32]) -> Result<()> {
         let addr = addr::norm(addr)?;
         let path = self.path_of(&addr, ENC_SUFFIX);
         if let Some(parent) = path.parent() {
@@ -171,12 +173,38 @@ impl Store {
         Ok(())
     }
 
-    /// Seal `plaintext` under the Keychain key.
-    pub fn seal(&self, addr: &str, plaintext: &[u8]) -> Result<()> {
+    /// Seal already-framed `plaintext` under the Keychain key.
+    /// Crate-only like [`Store::seal_with`]: outsiders frame through
+    /// [`Store::store_text`] / [`Store::set_file`].
+    pub(crate) fn seal(&self, addr: &str, plaintext: &[u8]) -> Result<()> {
         match keychain::get()? {
             Some(key) => self.seal_with(addr, plaintext, &key),
             None => Err(Error::NoKey),
         }
+    }
+
+    /// Stores a text value the way the schema says (or the caller
+    /// forces), under an explicit key. True when plain.
+    pub fn store_text_with(
+        &self,
+        addr: &str,
+        value: &str,
+        plain: Option<bool>,
+        key: &[u8; 32],
+    ) -> Result<bool> {
+        let addr = addr::norm(addr)?;
+        let schema = schema::Schema::load(&self.schema_path)?;
+        let plain =
+            plain.unwrap_or_else(|| schema.kind_rule(&addr).map(|k| k.plain).unwrap_or(false));
+        if plain {
+            self.put_plain(&addr, value)?;
+        } else {
+            let mut plaintext = Vec::with_capacity(1 + value.len());
+            plaintext.push(b'T');
+            plaintext.extend_from_slice(value.as_bytes());
+            self.seal_with(&addr, &plaintext, key)?;
+        }
+        Ok(plain)
     }
 
     /// Deletes both twins. Missing entirely reads as not found.
@@ -204,7 +232,7 @@ impl Store {
         if let Some(parent) = path.parent() {
             est_core::store::create_dir_all_mode(parent, 0o700)?;
         }
-        est_core::store::write_atomic(&path, text.as_bytes(), 0o644)?;
+        est_core::store::write_atomic(&path, text.as_bytes(), 0o600)?;
         let _ = std::fs::remove_file(self.path_of(&addr, ENC_SUFFIX));
         Ok(())
     }
@@ -241,13 +269,12 @@ impl Store {
             plain.unwrap_or_else(|| schema.kind_rule(&addr).map(|k| k.plain).unwrap_or(false));
         if plain {
             self.put_plain(&addr, value)?;
-        } else {
-            let mut plaintext = Vec::with_capacity(1 + value.len());
-            plaintext.push(b'T');
-            plaintext.extend_from_slice(value.as_bytes());
-            self.seal(&addr, &plaintext)?;
+            return Ok(true);
         }
-        Ok(plain)
+        match keychain::get()? {
+            Some(key) => self.store_text_with(&addr, value, Some(false), &key),
+            None => Err(Error::NoKey),
+        }
     }
 
     /// Open a secret under an explicit key: the hermetic read path.
@@ -255,11 +282,7 @@ impl Store {
         let addr = addr::norm(addr)?;
         let path = self.path_of(&addr, ENC_SUFFIX);
         if !path.is_file() {
-            let plain = self.path_of(&addr, PLAIN_SUFFIX);
-            if plain.is_file() {
-                return Ok(Sealed::Text(std::fs::read(plain)?));
-            }
-            return Err(Error::NotFound(addr));
+            return self.open_plain(&addr);
         }
         let raw = std::fs::read(&path)?;
         open_bytes(&addr, &raw, key)
@@ -270,17 +293,23 @@ impl Store {
         let addr = addr::norm(addr)?;
         let path = self.path_of(&addr, ENC_SUFFIX);
         if !path.is_file() {
-            let plain = self.path_of(&addr, PLAIN_SUFFIX);
-            if plain.is_file() {
-                return Ok(Sealed::Text(std::fs::read(plain)?));
-            }
-            return Err(Error::NotFound(addr));
+            return self.open_plain(&addr);
         }
         let raw = std::fs::read(&path)?;
         match keychain::get()? {
             Some(key) => open_bytes(&addr, &raw, &key),
             None => Err(Error::NoKey),
         }
+    }
+
+    /// The `.plain` twin, or NotFound. `addr` already normed. Shared by
+    /// the two unseal paths so the fallback lives in one place.
+    fn open_plain(&self, addr: &str) -> Result<Sealed> {
+        let plain = self.path_of(addr, PLAIN_SUFFIX);
+        if plain.is_file() {
+            return Ok(Sealed::Text(std::fs::read(plain)?));
+        }
+        Err(Error::NotFound(addr.to_string()))
     }
 
     /// The filesystem half of [`Store::init`]: refuse when a store already
@@ -293,6 +322,8 @@ impl Store {
             )));
         }
         est_core::store::create_dir_all_mode(&self.dir, 0o700)?;
+        // `.salt` is only a presence marker (see docs/format.md): its 32
+        // random bytes keep the legacy shape, never a KDF input.
         est_core::store::write_atomic(&self.dir.join(".salt"), &random_32()?, 0o600)?;
         Ok(())
     }
@@ -401,12 +432,8 @@ fn legacy_store(home: &str) -> Option<PathBuf> {
 }
 
 fn random_32() -> Result<[u8; 32]> {
-    // Exactly 32 bytes: `fs::read` would chase /dev/urandom to an EOF that
-    // never comes.
-    use std::io::Read;
-    let mut file = std::fs::File::open("/dev/urandom").map_err(Error::Io)?;
     let mut out = [0u8; 32];
-    file.read_exact(&mut out).map_err(Error::Io)?;
+    getrandom::fill(&mut out).map_err(|e| Error::Format(format!("no randomness: {e}")))?;
     Ok(out)
 }
 
@@ -627,5 +654,17 @@ mod tests {
             resolve_schema_path(None, &base, &home),
             base.join("vault").join("templates.toml")
         );
+    }
+
+    #[test]
+    fn plain_files_are_owner_only() {
+        let (_dir, store) = test_store("plain-perms");
+        store.put_plain("ACME:NOTE:ME", "hello").unwrap();
+        let mode = std::fs::metadata(store.path_of("ACME:NOTE:ME", PLAIN_SUFFIX))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
     }
 }
